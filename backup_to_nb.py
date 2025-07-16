@@ -59,8 +59,8 @@ def create_directory(nb_dir, div_id):
         "path": path,
         "is_work_dir": False
     }
-    if divide_id == 0:
-        payload["divide_id"] = int(div_id),
+    if divide_id != 0:
+        payload["divide_id"] = int(div_id)
     headers = request_header()
     headers["Content-Type"] = "application/json"
 
@@ -81,7 +81,7 @@ def create_directory(nb_dir, div_id):
 def list_nextbox_dir(path, search=None):
     """Получает список файлов в директории NextBox, создает директорию при 404"""
     params = {"path": path, "offset": 0, "limit": 1000}
-    if divide_id == 0:
+    if divide_id != 0:
         params["divide_id"] = int(divide_id)
     if search:
         params["search"] = search
@@ -117,7 +117,7 @@ def upload_file(file_path, target_dir):
     with open(file_path, 'rb') as f:
         files = {'file': (file_name, f)}
         data = {'path': target_dir}
-        if divide_id == 0:
+        if divide_id != 0:
             data["divide_id"] = int(divide_id)
         response = requests.post(
             nextbox_host + "/storage/files",
@@ -224,7 +224,7 @@ def perform_backup():
 
 def initial_check():
     try:
-        list_nextbox_dir(nextbox_dir, '')
+        list_nextbox_dir('', '')
         logging.info("Initial check: Authentication and directory access OK")
         if not os.path.isdir(local_dir):
             raise Exception(f'Local directory not found: {local_dir}')
@@ -287,6 +287,13 @@ def main_loop():
 
 
 if __name__ == "__main__":
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(levelname)s - %(message)s',
+        handlers=[
+            logging.StreamHandler(sys.stdout)
+        ]
+    )
     try:
         logging.info("Backup service starting...")
         initial_check()
