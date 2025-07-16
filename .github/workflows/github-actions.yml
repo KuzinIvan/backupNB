@@ -26,7 +26,7 @@ jobs:
     - name: Install Nuitka
       run: pip install nuitka
 
-    - name: bot_client.py
+    - name: backup_to_nb
       run: python3 -m nuitka --no-pyi-file --onefile --output-dir=compile --remove-output --jobs=2 ./backup_to_nb.py
 
     - name: nb_loads

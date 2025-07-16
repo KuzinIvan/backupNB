@@ -5,7 +5,7 @@ After=network.target
 [Service]
 User=root
 WorkingDirectory=/opt/backupNB/
-ExecStart=/opt/backupNB/backup_to_nb.py
+ExecStart=/opt/backupNB/backup_to_nb.bin
 
 RestartSec=60
 Restart=always
