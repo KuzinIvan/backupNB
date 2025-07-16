@@ -1,0 +1,33 @@
+name: Compile bonus-bot all
+
+on:
+  push:
+    branches:
+      - main  # Замените на вашу основную ветку, если нужно
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+
+    steps:
+    - name: Checkout Code
+      uses: actions/checkout@v2
+
+    - name: Set up Python
+      uses: actions/setup-python@v2
+      with:
+        python-version: '3.13'
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+
+    - name: Install Nuitka
+      run: pip install nuitka
+
+    - name: bot_client.py
+      run: python3 -m nuitka --no-pyi-file --onefile --output-dir=compile --remove-output --jobs=2 ./backup_to_nb.py
+
+    - name: nb_loads
+      run: python3 nb_loads.py --path=backup_tools

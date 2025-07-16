@@ -1,0 +1,14 @@
+[Unit]
+Description=Сервис для отправки бекапов данных в NextBox
+After=network.target
+
+[Service]
+User=root
+WorkingDirectory=/opt/backupNB/
+ExecStart=/opt/backupNB/backup_to_nb.py
+
+RestartSec=60
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
