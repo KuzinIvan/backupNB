@@ -198,7 +198,7 @@ def rotate_backups():
 
 def perform_backup():
     logging.info(f"[{datetime.now()}] Starting backup process...")
-
+    archive_path = None
     try:
         rotate_backups()
     except Exception as e:
@@ -219,6 +219,12 @@ def perform_backup():
 
     except Exception as e:
         logging.critical(f"Critical backup error: {str(e)}")
+        try:
+            if archive_path:
+                os.remove(archive_path)
+                logging.info(f"Temporary file removed: {archive_path}")
+        except Exception as e:
+            logging.error(f"Failed to remove temporary file: {str(e)}")
         sys.exit(1)
 
 

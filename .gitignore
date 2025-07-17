@@ -5,3 +5,4 @@ __pycache__
 *.dist
 compile/*
 .DS_Store
+last_backup_time.txt
