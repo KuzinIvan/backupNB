@@ -220,7 +220,7 @@ def perform_backup():
     except Exception as e:
         logging.critical(f"Critical backup error: {str(e)}")
         try:
-            if archive_path:
+            if archive_path is not None:
                 os.remove(archive_path)
                 logging.info(f"Temporary file removed: {archive_path}")
         except Exception as e:
