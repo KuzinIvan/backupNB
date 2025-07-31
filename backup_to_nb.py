@@ -11,6 +11,8 @@ import re
 import tempfile
 import logging
 import sys
+import glob
+import signal
 
 parser = argparse.ArgumentParser(description='NextBox Backup Utility')
 parser.add_argument('--config', type=str, default="config.ini", help='Path to config file')
@@ -43,7 +45,7 @@ def delete_nextbox_file(full_path):
     if divide_id != 0:
         params['divide_id'] = int(divide_id)
     headers = request_header()
-    response = requests.delete(nextbox_host + "/storage/element", headers=headers, params=params)
+    response = requests.delete(nextbox_host + "/storage/element", headers=headers, params=params, timeout=30)
     response.raise_for_status()
 
 
@@ -68,7 +70,8 @@ def create_directory(nb_dir, div_id):
         response = requests.post(
             nextbox_host + "/storage/element",
             headers=headers,
-            json=payload
+            json=payload,
+            timeout=30
         )
         response.raise_for_status()
         logging.info(f"Directory created: {path}")
@@ -89,7 +92,7 @@ def list_nextbox_dir(path, search=None):
     headers = request_header()
 
     try:
-        response = requests.get(nextbox_host + "/storage", headers=headers, params=params)
+        response = requests.get(nextbox_host + "/storage", headers=headers, params=params, timeout=30)
         response.raise_for_status()
         return response.json()["rows"]
 
@@ -98,7 +101,7 @@ def list_nextbox_dir(path, search=None):
             # Попробуем создать директорию
             if create_directory(nextbox_dir, divide_id):
                 # Повторяем запрос после создания директории
-                response = requests.get(nextbox_host + "/storage", headers=headers, params=params)
+                response = requests.get(nextbox_host + "/storage", headers=headers, params=params, timeout=30)
                 response.raise_for_status()
                 return response.json()["rows"]
             else:
@@ -111,21 +114,35 @@ def list_nextbox_dir(path, search=None):
 
 def upload_file(file_path, target_dir):
     file_name = os.path.basename(file_path)
+    file_size = os.path.getsize(file_path)
     headers = request_header()
     headers.pop("Content-Type", None)
 
-    with open(file_path, 'rb') as f:
-        files = {'file': (file_name, f)}
-        data = {'path': target_dir}
-        if divide_id != 0:
-            data["divide_id"] = int(divide_id)
-        response = requests.post(
-            nextbox_host + "/storage/files",
-            headers=headers,
-            files=files,
-            data=data
-        )
-    response.raise_for_status()
+    logging.info(f"Starting upload of {file_name} ({file_size} bytes) to {target_dir}")
+    
+    try:
+        with open(file_path, 'rb') as f:
+            files = {'file': (file_name, f)}
+            data = {'path': target_dir}
+            if divide_id != 0:
+                data["divide_id"] = int(divide_id)
+            
+            # Увеличиваем timeout для больших файлов (базовый 300 сек + 1 сек на каждый MB)
+            upload_timeout = 300 + (file_size // (1024 * 1024))
+            logging.info(f"Upload timeout set to {upload_timeout} seconds")
+            
+            response = requests.post(
+                nextbox_host + "/storage/files",
+                headers=headers,
+                files=files,
+                data=data,
+                timeout=upload_timeout
+            )
+        response.raise_for_status()
+        logging.info(f"Successfully uploaded {file_name}")
+    except Exception as e:
+        logging.error(f"Failed to upload {file_name}: {str(e)}")
+        raise
 
 
 def create_backup_archive():
@@ -134,14 +151,38 @@ def create_backup_archive():
     archive_name = f"{dir_name}_{timestamp}.zip"
     archive_path = os.path.join(tempfile.gettempdir(), archive_name)
 
-    with zipfile.ZipFile(archive_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
-        for root, _, files in os.walk(local_dir):
-            for file in files:
-                file_path = os.path.join(root, file)
-                arcname = os.path.relpath(file_path, local_dir)
-                zipf.write(file_path, arcname)
+    logging.info(f"Creating backup archive: {archive_name}")
+    start_time = time.time()
+    file_count = 0
+    
+    try:
+        with zipfile.ZipFile(archive_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
+            for root, _, files in os.walk(local_dir):
+                for file in files:
+                    file_path = os.path.join(root, file)
+                    arcname = os.path.relpath(file_path, local_dir)
+                    zipf.write(file_path, arcname)
+                    file_count += 1
+                    
+                    # Логируем прогресс каждые 1000 файлов
+                    if file_count % 1000 == 0:
+                        logging.info(f"Archived {file_count} files...")
 
-    return archive_path
+        duration = time.time() - start_time
+        archive_size = os.path.getsize(archive_path)
+        logging.info(f"Archive created successfully: {file_count} files, {archive_size} bytes, took {duration:.2f} seconds")
+        
+        return archive_path
+        
+    except Exception as e:
+        logging.error(f"Failed to create archive: {str(e)}")
+        # Удаляем неполный архив при ошибке
+        if os.path.exists(archive_path):
+            try:
+                os.remove(archive_path)
+            except:
+                pass
+        raise
 
 
 def rotate_backups():
@@ -228,8 +269,32 @@ def perform_backup():
         sys.exit(1)
 
 
+def cleanup_temp_files():
+    """Очищает старые временные файлы бекапов"""
+    try:
+        dir_name = os.path.basename(os.path.normpath(local_dir))
+        temp_pattern = os.path.join(tempfile.gettempdir(), f"{dir_name}_*.zip")
+        temp_files = glob.glob(temp_pattern)
+        
+        if temp_files:
+            logging.info(f"Found {len(temp_files)} temporary backup files to cleanup")
+            for temp_file in temp_files:
+                try:
+                    os.remove(temp_file)
+                    logging.info(f"Removed temporary file: {temp_file}")
+                except Exception as e:
+                    logging.warning(f"Failed to remove temporary file {temp_file}: {str(e)}")
+        else:
+            logging.info("No temporary backup files found")
+    except Exception as e:
+        logging.warning(f"Cleanup of temporary files failed: {str(e)}")
+
+
 def initial_check():
     try:
+        # Очищаем старые временные файлы при запуске
+        cleanup_temp_files()
+        
         list_nextbox_dir('', '')
         logging.info("Initial check: Authentication and directory access OK")
         if not os.path.isdir(local_dir):
@@ -248,6 +313,7 @@ def initial_check():
     except Exception as e:
         logging.critical(f"Initial check failed: {str(e)}")
         sys.exit(1)
+
 
 
 def main_loop():
@@ -277,6 +343,7 @@ def main_loop():
 
             if now >= next_run or first_run == 1:
                 first_run = 0
+                logging.info(f"Backup scheduled to run at {next_run}, current time: {now}")
                 perform_backup()
                 last_backup_time = datetime.now()
 
@@ -285,6 +352,7 @@ def main_loop():
                 continue
 
             sleep_time = min(300, (next_run - now).total_seconds())
+            logging.debug(f"Next backup scheduled for {next_run}, sleeping for {sleep_time} seconds")
             time.sleep(sleep_time)
 
         except Exception as e:
@@ -292,7 +360,17 @@ def main_loop():
             sys.exit(1)
 
 
+def signal_handler(signum, frame):
+    """Обработчик сигналов для корректного завершения"""
+    logging.info(f"Received signal {signum}, shutting down gracefully...")
+    sys.exit(0)
+
+
 if __name__ == "__main__":
+    # Устанавливаем обработчики сигналов
+    signal.signal(signal.SIGTERM, signal_handler)
+    signal.signal(signal.SIGINT, signal_handler)
+    
     logging.basicConfig(
         level=logging.INFO,
         format='%(asctime)s - %(levelname)s - %(message)s',
