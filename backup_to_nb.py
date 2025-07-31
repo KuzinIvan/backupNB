@@ -11,8 +11,11 @@ import re
 import tempfile
 import logging
 import sys
+import uuid
+import mimetypes
 import glob
 import signal
+
 
 parser = argparse.ArgumentParser(description='NextBox Backup Utility')
 parser.add_argument('--config', type=str, default="config.ini", help='Path to config file')
@@ -112,34 +115,87 @@ def list_nextbox_dir(path, search=None):
             raise
 
 
+
 def upload_file(file_path, target_dir):
     file_name = os.path.basename(file_path)
     file_size = os.path.getsize(file_path)
+    
+    # Проверяем доступную память
+    try:
+        import psutil
+        available_memory = psutil.virtual_memory().available
+        logging.info(f"Available memory: {available_memory / (1024*1024):.1f} MB")
+        
+        if file_size > available_memory * 0.3:  # Если файл больше 30% доступной памяти
+            logging.warning(f"File size ({file_size / (1024*1024):.1f} MB) is large relative to available memory")
+    except ImportError:
+        logging.info("psutil not available, cannot check memory")
+    
     headers = request_header()
-    headers.pop("Content-Type", None)
-
-    logging.info(f"Starting upload of {file_name} ({file_size} bytes) to {target_dir}")
+    
+    logging.info(f"Starting upload of {file_name} ({file_size / (1024*1024):.1f} MB) to {target_dir}")
     
     try:
-        with open(file_path, 'rb') as f:
-            files = {'file': (file_name, f)}
-            data = {'path': target_dir}
+        # Используем потоковую загрузку с небольшими чанками
+        chunk_size = 1024 * 1024  # 1MB чанки для экономии памяти
+        
+        # Формируем boundary вручную для потоковой отправки
+        boundary = str(uuid.uuid4())
+        headers['Content-Type'] = f'multipart/form-data; boundary={boundary}'
+        
+        # Увеличиваем timeout для больших файлов
+        upload_timeout = 600 + (file_size // (1024 * 1024)) * 2
+        logging.info(f"Upload timeout set to {upload_timeout} seconds")
+        
+        # Создаем итератор данных для потоковой отправки
+        def generate_data():
+            # Начало multipart
+            yield f'--{boundary}\r\n'.encode()
+            yield f'Content-Disposition: form-data; name="path"\r\n\r\n'.encode()
+            yield f'{target_dir}\r\n'.encode()
+            
             if divide_id != 0:
-                data["divide_id"] = int(divide_id)
+                yield f'--{boundary}\r\n'.encode()
+                yield f'Content-Disposition: form-data; name="divide_id"\r\n\r\n'.encode()
+                yield f'{int(divide_id)}\r\n'.encode()
             
-            # Увеличиваем timeout для больших файлов (базовый 300 сек + 1 сек на каждый MB)
-            upload_timeout = 300 + (file_size // (1024 * 1024))
-            logging.info(f"Upload timeout set to {upload_timeout} seconds")
+            # Файл
+            yield f'--{boundary}\r\n'.encode()
+            yield f'Content-Disposition: form-data; name="file"; filename="{file_name}"\r\n'.encode()
+            yield f'Content-Type: application/octet-stream\r\n\r\n'.encode()
             
-            response = requests.post(
-                nextbox_host + "/storage/files",
-                headers=headers,
-                files=files,
-                data=data,
-                timeout=upload_timeout
-            )
+            # Читаем файл по частям
+            with open(file_path, 'rb') as f:
+                while True:
+                    chunk = f.read(chunk_size)
+                    if not chunk:
+                        break
+                    yield chunk
+            
+            # Конец multipart
+            yield f'\r\n--{boundary}--\r\n'.encode()
+        
+        logging.info("Starting streaming upload...")
+        start_time = time.time()
+        
+        response = requests.post(
+            nextbox_host + "/storage/files",
+            headers=headers,
+            data=generate_data(),
+            timeout=upload_timeout,
+            stream=True
+        )
+        
+        upload_duration = time.time() - start_time
+        logging.info(f"Upload completed in {upload_duration:.2f} seconds")
+        
         response.raise_for_status()
         logging.info(f"Successfully uploaded {file_name}")
+        
+    except MemoryError as e:
+        logging.error(f"Memory error during upload: {str(e)}")
+        logging.error("Try reducing the file size or increasing system memory")
+        raise
     except Exception as e:
         logging.error(f"Failed to upload {file_name}: {str(e)}")
         raise
